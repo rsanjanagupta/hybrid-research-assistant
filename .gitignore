@@ -1,0 +1,18 @@
+# Environment variables
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environment
+venv/
+
+# FAISS index (optional large files)
+vectorstore/
+
+# OS files
+.DS_Store
+
+# Logs
+*.log
