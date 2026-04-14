@@ -1,12 +1,10 @@
 import os
-from sentence_transformers import SentenceTransformer
+import pickle
 import faiss
 import numpy as np
-import pickle
+from sentence_transformers import SentenceTransformer
 from pypdf import PdfReader
 import docx
-from ingest import load_user_index
-from web_search import search_web
 
 
 # -----------------------------
@@ -35,8 +33,7 @@ def read_pdf(file_path):
 # -----------------------------
 def read_docx(file_path):
     doc = docx.Document(file_path)
-    text = "\n".join([para.text for para in doc.paragraphs])
-    return text
+    return "\n".join([para.text for para in doc.paragraphs])
 
 
 # -----------------------------
@@ -48,13 +45,14 @@ def chunk_text(text, chunk_size=300):
 
     for i in range(0, len(words), chunk_size):
         chunk = " ".join(words[i:i + chunk_size])
-        chunks.append(chunk)
+        if chunk.strip():
+            chunks.append(chunk)
 
     return chunks
 
 
 # -----------------------------
-# 5. Load documents (USER-SPECIFIC)
+# 5. Load documents
 # -----------------------------
 def load_documents(folder_path):
     all_chunks = []
@@ -92,16 +90,14 @@ def create_index(chunks):
     embeddings = model.encode(chunks)
     embeddings = np.array(embeddings).astype("float32")
 
-    dimension = embeddings.shape[1]
-    index = faiss.IndexFlatL2(dimension)
-
+    index = faiss.IndexFlatL2(embeddings.shape[1])
     index.add(embeddings)
 
     return index, chunks
 
 
 # -----------------------------
-# 7. Save index (USER-SPECIFIC)
+# 7. Save index
 # -----------------------------
 def save_index(index, chunks, folder_path):
     index_path = os.path.join(folder_path, "faiss_index.bin")
@@ -116,57 +112,61 @@ def save_index(index, chunks, folder_path):
 
 
 # -----------------------------
-# 8. MAIN INGEST FUNCTION
+# 8. 🔥 LOAD INDEX (AUTO + FIXED)
+# -----------------------------
+def load_user_index(user_id, base_path="data"):
+    folder_path = os.path.join(base_path, user_id)
+
+    index_path = os.path.join(folder_path, "faiss_index.bin")
+    doc_path = os.path.join(folder_path, "documents.pkl")
+
+    # 🔥 ONLY check index (prevents repeated ingestion)
+    if not os.path.exists(index_path):
+        print(f"⚡ No index found for user: {user_id}")
+        print("⚡ Running ingestion...")
+
+        success = ingest_documents(user_id, base_path)
+
+        # ❌ If no docs → return signal for fallback
+        if not success:
+            print("⚠️ No documents → returning empty for web fallback")
+            return None, []
+
+    # ✅ Load index
+    print(f"📂 Loading index for user: {user_id}")
+
+    index = faiss.read_index(index_path)
+
+    # Load documents safely
+    if os.path.exists(doc_path):
+        with open(doc_path, "rb") as f:
+            documents = pickle.load(f)
+    else:
+        documents = []
+
+    return index, documents
+
+
+# -----------------------------
+# 9. MAIN INGEST FUNCTION
 # -----------------------------
 def ingest_documents(user_id, base_path="data"):
-    """
-    Ingest documents for a specific user
-    """
-
-    folder = os.path.join(base_path, user_id)
-
-    # ensure folder exists
-    os.makedirs(folder, exist_ok=True)
+    folder_path = os.path.join(base_path, user_id)
 
     print(f"\n📂 Ingesting for user: {user_id}")
 
-    # Create folder if not exists
     os.makedirs(folder_path, exist_ok=True)
 
     chunks = load_documents(folder_path)
 
+    # ❌ IMPORTANT: signal failure properly
     if len(chunks) == 0:
         print("⚠️ No documents found for this user.")
         return False
 
-    print(f"Total chunks created: {len(chunks)}")
+    print(f"📊 Total chunks created: {len(chunks)}")
 
     index, chunks = create_index(chunks)
     save_index(index, chunks, folder_path)
 
     return True
-
-def retrieve_documents(query, user_id):
-    from ingest import load_user_index
-
-    index, documents = load_user_index(user_id)
-
-    # 🔥 If no user docs → use web
-    if index is None or len(documents) == 0:
-        print("🌐 No user docs → switching to web search...")
-        web_results = search_web(query)
-
-        # Return ONLY content (agent expects text)
-        return [r["content"] for r in web_results]
-
-    # ✅ FAISS retrieval
-    from ingest import model
-    import numpy as np
-
-    query_embedding = model.encode([query]).astype("float32")
-
-    D, I = index.search(query_embedding, k=5)
-
-    results = [documents[i] for i in I[0]]
-
-    return results
